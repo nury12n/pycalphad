@@ -1,9 +1,10 @@
-from pycalphad.mapping.map_strategies.strategy_base import MapStrategy
+from pycalphad.mapping.map_strategies.strategy_base import MapStrategy, TestDirectionResult
 from pycalphad import Database, variables as v
 from typing import List, Mapping
 from pycalphad.mapping.primitives import ZPFLine, Point, Node, Direction, ExitHint
 import itertools
 import numpy as np
+from pycalphad.mapping.starting_points import starting_point_from_equilibrium
 
 """
 Strategy for stepping
@@ -15,9 +16,20 @@ class StepStrategy (MapStrategy):
         self.stepping = True
         self.curr_direction = None
 
-    def add_nodes_from_point(self, point: Point):
+    def add_nodes_from_point(self, point: Point, axis_var = None):
+        #NOTE: axis_var is not needed for StepStrategy since we only have 1 variable to map against
+        #      but this is here for compatibility with MapStrategy and GeneralStrategy
+        if axis_var is not None:
+            print(f'Warning: Overriding axis variable is not allowed for step strategy. Using {self.axis_vars[0]} as the axis variable.')
         self.node_queue.add_node(*self.convert_point_to_node(point, self.axis_vars[0], Direction.POSITIVE, ExitHint.NO_EXITS))
         self.node_queue.add_node(*self.convert_point_to_node(point, self.axis_vars[0], Direction.NEGATIVE, ExitHint.NO_EXITS))
+
+    def add_nodes_from_conditions_with_direction(self, conditions, start_dir = None):
+        if start_dir is None:
+            self.add_nodes_from_conditions(conditions, None)
+        else:
+            start_point = starting_point_from_equilibrium(self._system_definition['dbf'], self._system_definition['comps'], self._system_definition['phases'], conditions, None)
+            self.node_queue.add_node(*self.convert_point_to_node(start_point, self.axis_vars[0], start_dir, ExitHint.NO_EXITS))
 
     def find_exits(self, node):
         """
@@ -107,13 +119,18 @@ class StepStrategy (MapStrategy):
             directions = [self.curr_direction]
         possible_directions = []
         for d in directions:
-            valid, new_dir = self.test_direction(node, self.axis_vars[0], d, MIN_DELTA_RATIO)
-            if valid:
+            test_result, new_dir, delta_other_av = self.test_direction(node, self.axis_vars[0], d, MIN_DELTA_RATIO)
+            if test_result == TestDirectionResult.VALID:
                 possible_directions.append(new_dir)
 
         if len(possible_directions) > 0:
             return self.find_best_direction(node, possible_directions)
         else:
+            #If stepping and testing from a new node fails, then check if we're at the axis limits
+            #  If not, then create a new starting point with conditions a bit closer to the axis limit
+            self.log('DIRECTION:\tFailed to find exit.')
+            self._add_starting_point_at_last_condition(node, self.curr_direction)
+            #If curr_direction is None, then return None (although this shouldn't happen during stepping anyways)
             return None
 
     def find_best_direction(self, node: Node, possible_directions):
@@ -123,3 +140,24 @@ class StepStrategy (MapStrategy):
         return
         if len(zpfline.points) < 2:
             zpfline.current_delta = self.axis_delta[zpfline.axis_var]
+
+    def attempt_to_add_point(self, zpfline: ZPFLine, step_result):
+        attempt_result = super().attempt_to_add_point(zpfline, step_result)
+        if not attempt_result:
+            self.log('POINT CHECK:\tZPF line ended unexpectedly')
+            self._add_starting_point_at_last_condition(step_result[1], zpfline.axis_direction)
+        return attempt_result
+    
+    def _add_starting_point_at_last_condition(self, point, axis_dir):
+        new_delta = 0.1 * self.axis_delta[self.axis_vars[0]]
+        if axis_dir == Direction.POSITIVE:
+            not_at_axis_lims = point.global_conditions[self.axis_vars[0]] < self.axis_lims[self.axis_vars[0]][1] - new_delta
+        if axis_dir == Direction.NEGATIVE:
+            new_delta *= -1
+            not_at_axis_lims = point.global_conditions[self.axis_vars[0]] > self.axis_lims[self.axis_vars[0]][0] - new_delta
+
+        if not_at_axis_lims:
+            self.log('START_POINT:\tAdding new starting points at {} with {}'.format(point.global_conditions, axis_dir))
+            new_conds = {key:value for key,value in point.global_conditions.items()}
+            new_conds[self.axis_vars[0]] += new_delta
+            self.add_nodes_from_conditions_with_direction(new_conds, axis_dir)

@@ -1,7 +1,7 @@
 from pycalphad.mapping.primitives import STATEVARS
 from pycalphad import calculate, variables as v
 from pycalphad.core.composition_set import CompositionSet
-from pycalphad.mapping.primitives import _get_value_for_var, Point, Node
+from pycalphad.mapping.primitives import _get_value_for_var, Point, Node, _eq_compset
 from xarray import Dataset
 from pycalphad.core.solver import Solver
 import numpy as np
@@ -119,6 +119,13 @@ def _extract_point_from_dataset(dbf, comps, models, eq_result, phase_records, nu
     curr_conds = _get_conditions_from_eq(eq_result)
     return Point(curr_conds, compsets[:num_phases_to_fix], compsets[num_phases_to_fix:], [])
 
+def _check_all_compsets_are_separate(cs_list):
+    for i in range(len(cs_list)):
+        for j in range(i+1, len(cs_list)):
+            if _eq_compset(cs_list[i], cs_list[j]):
+                return False
+    return True
+
 def calculate_with_new_conditions(point : Point, new_conds, free_var):
     '''
     Create a new point and recalculate equilibrium with the given conditions
@@ -211,8 +218,26 @@ def check_point_is_global_min(point: Point, chem_pot, sys_definition, phase_reco
     site_fracs = np.squeeze(test_points.Y.values)
     gm = np.squeeze(test_points.GM.values)
 
-    g_chempot = comps * np.array(chem_pot)
+    #Calculate max residual of stable composition sets to chemical potential
+    #   We only care if the chemical potential happens to be lying above the
+    #      free energy of the compsets since this can result in falsely identifying
+    #      new composition sets that aren't actually stable
+    #   When the chemical potential is below the free energies, then this will be
+    #      risk-averse where a new composition set may not be detected. However, this
+    #      should be corrected later when the new composition set becomes detected as
+    #      we will removed the metastable parts of the zpf line behind the newly calculated
+    #      node
+    max_res = np.amax([0] + [10*(np.sum(np.array(cs.X)*chem_pot) - np.array(cs.energy)) for cs in point.stable_composition_sets])
+    #max_res = 0
+
+    #Compare relative difference between free energy of phase and chem pot hyperplane
+    #   This seems to take care of the cases where a phase is mistakenly added due to 
+    #   numerical uncertainty in the chem_pot (since the convergence criteria is depends on
+    #   site fraction, phase amount and state variable changes)
+    g_chempot = comps * np.array(chem_pot - max_res)
     dG = (np.sum(g_chempot, axis=1)) - gm
+    #u_sum = np.sum(g_chempot, axis=1)
+    #dG = (u_sum - gm) / np.abs(u_sum)
 
     # Largest driving force (positive)
     max_id = np.argmax(dG)
@@ -290,6 +315,8 @@ def create_node_from_different_points(prev_point: Point, new_point: Point, axis_
 
     # Solve
     try:
+        if not _check_all_compsets_are_separate(solution_cs):
+            return None
         solver = Solver(remove_metastable=True, allow_changing_phases=False)
         result = solver.solve(solution_cs, {str(k):val for k,val in new_conds.items()})
         if not result.converged:

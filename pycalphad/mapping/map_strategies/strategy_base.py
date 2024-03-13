@@ -1,6 +1,6 @@
 from pycalphad import Database, variables as v
 from typing import List, Mapping
-from pycalphad.mapping.primitives import ZPFLine, NodeQueue, STATEVARS, Node, Point, ZPFLine, _get_global_value_for_var, _get_value_for_var, Direction, ExitHint, NodesExhaustedError
+from pycalphad.mapping.primitives import ZPFLine, NodeQueue, STATEVARS, Node, Point, ZPFLine, _get_global_value_for_var, _get_value_for_var, Direction, ExitHint, NodesExhaustedError, _eq_compset
 from pycalphad.codegen.callables import build_phase_records
 from pycalphad.core.utils import instantiate_models, filter_phases, unpack_components
 from pycalphad.mapping.starting_points import starting_point_from_equilibrium
@@ -9,10 +9,17 @@ from copy import deepcopy
 import numpy as np
 from pycalphad.core.constants import COMP_DIFFERENCE_TOL
 import copy
+from enum import Enum
 
 """
 Base strategy class that each strategy will derive from
 """
+
+class TestDirectionResult(Enum):
+    VALID = 0
+    NOT_GLOBAL_MIN = 1
+    REDUCED_PHASES = 2
+    EQ_FAILURE = 3
 
 class MapStrategy:
     def __init__(self, database: Database, components : List, elements : List, phases: List, conditions: Mapping):
@@ -62,7 +69,7 @@ class MapStrategy:
         self.MIN_DELTA_RATIO = 0.1
         self.DELTA_SCALE = 0.5
 
-    def add_nodes_from_point(self, point: Point):
+    def add_nodes_from_point(self, point: Point, axis_var = None):
         raise NotImplementedError()
 
     def find_exits(self, node):
@@ -87,9 +94,9 @@ class MapStrategy:
     def normalize_factor(self, av):
         return self.axis_delta[av]
 
-    def add_nodes_from_conditions(self, conditions):
+    def add_nodes_from_conditions(self, conditions, axis_var = None):
         start_point = starting_point_from_equilibrium(self._system_definition['dbf'], self._system_definition['comps'], self._system_definition['phases'], conditions, None)
-        self.add_nodes_from_point(start_point)
+        self.add_nodes_from_point(start_point, axis_var)
 
     def add_starting_point_with_axis(self, point, ax):
         self.node_queue.add_node(*self.convert_point_to_node(point, ax, Direction.POSITIVE, ExitHint.NO_EXITS))
@@ -243,11 +250,17 @@ class MapStrategy:
         return False
 
     def do_map(self):
+        """
+        Run iterate until no more nodes are left
+        """
         finished = False
         while not finished:
             finished = self.iterate()
 
     def start_new_zpfline(self, node, newdir, starting_delta):
+        """
+        Create a new zpfline with a starting direction
+        """
         fixed_phases = [cs.phase_record.phase_name for cs in node.fixed_composition_sets]
         free_phases = [cs.phase_record.phase_name for cs in node.free_composition_sets]
         self.zpf_lines.append(ZPFLine(fixed_phases, free_phases))
@@ -264,44 +277,61 @@ class MapStrategy:
         Checks include - if results converged, if number of phases stay the same and if it's still global minimum
 
         Post check after adding point if is phase compositions converged to the same composition
+
+        Returns True under following conditions
+            zpfline is not finished yet (all checks pass and new point is added)
+            zpfline finishes as a new node was successfully found
+            zpfline finishes as we reached axis limits
+        Returns False if zpfline ends unexpectedly
+            A new node was attempted to be found but failed
+            Two composition sets converge
         """
         result, new_point, orig_cs = step_result
 
         zpfline.last_globally_checked_index += 1
         results_converged = self.check_results_converged(zpfline, step_result, self.axis_delta[zpfline.axis_var])
         if not results_converged:
-            return
+            #If results did not converge, but we hadn't reached the minimum axis delta, then the zpf line continues
+            #In which case, we should return True, so just return the opposite of zpfline.finished
+            return not zpfline.finished
 
-        num_phases_same, new_node = self.check_change_in_phases(step_result)
-        if not num_phases_same and new_node is not None:
-            self.process_new_node(zpfline, new_node, self.stepping)
+        num_phases_same, new_node = self.check_change_in_phases(zpfline, step_result)
+        #if not num_phases_same and new_node is not None:
+        if not num_phases_same:
             zpfline.finished = True
-            return
+            if new_node is None:
+                return False
+            else:
+                self.process_new_node(zpfline, new_node, self.stepping)
+                return True
 
-        composition_is_nearby = self.check_composition(zpfline, new_point, zpfline.points[-1])
+        composition_is_nearby = self.check_composition(zpfline.axis_var, new_point, zpfline.points[-1])
         if not composition_is_nearby:
             zpfline.finished = True
-            return
+            return False
 
         still_global_min, new_node = self.check_is_still_global_min(zpfline, step_result)
         if not still_global_min:
-            if new_node is not None:
-                self.process_new_node(zpfline, new_node, self.stepping)
             zpfline.finished = True
-            return
+            if new_node is None:
+                return False
+            else:
+                self.process_new_node(zpfline, new_node, self.stepping)
+                return True
 
         is_within_axis_limits = self.check_if_within_axis_limits(zpfline, step_result)
         if not is_within_axis_limits:
             zpfline.finished = True
-            return
+            return True
 
         phase_apart = self.check_similar_phase_compositions(new_point)
         if not phase_apart:
             self.log("TERMINATING LINE: All stable composition sets have phase compositions within tolerance")
             zpfline.finished = True
-            return
+            return False
 
         zpfline.append(new_point)
+        return True
 
     def process_new_node(self, zpfline: ZPFLine, new_node: Node, stepping):
         """
@@ -348,32 +378,45 @@ class MapStrategy:
 
     def test_direction(self, node, axis_var, direction, MIN_DELTA_RATIO = 1):
         av = axis_var
+        if len(self.axis_vars) > 1:
+            other_av = self.axis_vars[1-self.axis_vars.index(av)]
+        else:
+            other_av = None
+        delta_other_av = 0
         d = direction
         ax_delta = self.axis_delta[av]
         while ax_delta >= self.axis_delta[av]*MIN_DELTA_RATIO:
             self.log("DIRECTION:\tAttemping step in ", av, d, ax_delta)
-            viable_direction = True
+            test_result = TestDirectionResult.VALID
             try:
+                if other_av is not None:
+                    other_av_val = node.global_conditions[other_av]
+
                 (result, new_point, orig_cs) = self.take_step(node, av, ax_delta, self.axis_lims[av], d)
                 num_different_compsets = len(set(new_point.stable_composition_sets).symmetric_difference(orig_cs))
                 is_global_min, new_point = self.check_global_min(new_point, result.chemical_potentials)
+
+                if other_av is not None:
+                    new_other_av_val = new_point.global_conditions[other_av]
+                    delta_other_av = abs(other_av_val - new_other_av_val)
+
                 if not is_global_min:
                     self.log("DIRECTION:\tNot global minimum")
-                    viable_direction = False
+                    test_result = TestDirectionResult.NOT_GLOBAL_MIN
             except Exception as e:
                 self.log("DIRECTION:\t", e)
                 num_different_compsets = 0
-                viable_direction = False
+                test_result = TestDirectionResult.EQ_FAILURE
             if num_different_compsets != 0:
                 self.log("DIRECTION:\tLocal equilibrium reduced number of phases")
-                viable_direction = False
+                test_result = TestDirectionResult.REDUCED_PHASES
 
-            if viable_direction:
+            if test_result == TestDirectionResult.VALID:
                 self.log("DIRECTION:\tPossible direction found ", (av, d, ax_delta))
-                return True, (av, d, ax_delta, new_point, node)
+                return test_result, (av, d, ax_delta, new_point, node), delta_other_av
             else:
                 ax_delta *= self.DELTA_SCALE
-        return False, None
+        return test_result, None, delta_other_av
 
     def _get_exit_info_from_node(self, node):
         """
@@ -467,7 +510,7 @@ class MapStrategy:
         else:
             return True
 
-    def check_change_in_phases(self, step_result):
+    def check_change_in_phases(self, zpfline, step_result):
         results, new_point, orig_cs = step_result
         num_different_phases = compare_cs_for_change_in_phases(orig_cs, new_point.stable_composition_sets)
 
@@ -484,7 +527,7 @@ class MapStrategy:
                 return False, None
         return True, None
 
-    def check_composition(self, zpfline: ZPFLine, new_point, prev_point):
+    def check_composition(self, curr_axis_var, new_point, prev_point):
         """
         Checks if step result has strayed too far from the previous point, since we're limited to the axis_delta, we could use that for checking
             We'll add a scaling factor to the axis_delta for safety
@@ -517,7 +560,7 @@ class MapStrategy:
         in_limit = True
         for av in self.axis_vars:
             statevar_offset = 0
-            x_offset = 0 if zpfline.axis_var in STATEVARS else 1e-6
+            x_offset = 0 if curr_axis_var in STATEVARS else 1e-6
             offset = statevar_offset if av in STATEVARS else x_offset
             if new_point_comps[av] < self.axis_lims[av][0] + offset or new_point_comps[av] > self.axis_lims[av][1] - offset:
                 in_limit = False
@@ -555,7 +598,7 @@ class MapStrategy:
                     #Compare the conditions on the new node and reference point, sometimes, equilibrium will leads to an unusually off set
                     #   of compositions, in this case, we return that it is not global min, but don't supply the next node. This will end
                     #   the current zpf line without an node to get exits from
-                    if not self.check_composition(zpfline, new_node, point_ref):
+                    if not self.check_composition(zpfline.axis_var, new_node, point_ref):
                         self.log('GLOBAL_MIN:\tNew node was not calculated correctly', new_node)
                         return False, None
 

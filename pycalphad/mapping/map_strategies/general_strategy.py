@@ -1,4 +1,4 @@
-from pycalphad.mapping.map_strategies.strategy_base import MapStrategy
+from pycalphad.mapping.map_strategies.strategy_base import MapStrategy, TestDirectionResult
 from pycalphad.mapping.map_strategies.step_strategy import StepStrategy
 from pycalphad import Database, variables as v
 from typing import List, Mapping
@@ -17,13 +17,19 @@ class GeneralStrategy(MapStrategy):
         super().__init__(database, components, elements, phases, conditions)
         self.tielines = False
 
-    def add_nodes_from_point(self, point: Point):
-        if v.T in self.axis_vars:
-            curr_var = v.T
-        elif v.P in self.axis_vars:
-            curr_var = v.P
+    def add_nodes_from_point(self, point: Point, axis_var = None):
+        #If no axis variable is given, then default to the potential condition
+        #If no potential condition is available as a variable, then use the first composition variable
+        #Ideally, with the pycalphad API, axis_var will be defined automatically
+        if axis_var is None:
+            if v.T in self.axis_vars:
+                curr_var = v.T
+            elif v.P in self.axis_vars:
+                curr_var = v.P
+            else:
+                curr_var = self.axis_vars[0]
         else:
-            curr_var = self.axis_vars[0]
+            curr_var = axis_var
         step_conditions = {k:v for k,v in point.global_conditions.items()}
         step_conditions[curr_var] = (self.axis_lims[curr_var][0], self.axis_lims[curr_var][1], self.axis_delta[curr_var])
         step_mapper = StepStrategy(self._system_definition["dbf"], self._system_definition["comps"], self.elements, self._system_definition["phases"], step_conditions)
@@ -147,24 +153,35 @@ class GeneralStrategy(MapStrategy):
         free_comp_var = [av for av in self.axis_vars if av not in STATEVARS]
 
         # Test state variables first
+        # We add a check for composition to ensure it doesn't change too much when stepping in temperature
+        # If the composition doesn't change significantly, then we assume it's near stoichiometric and skip
+        # stepping in composition
+        test_composition = True
         for av in free_state_var:
             for d in directions:
-                valid, new_dir = self.test_direction(node, av, d, 1)
-                if valid:
+                test_result, new_dir, delta_other_av = self.test_direction(node, av, d, 1)
+                if test_result == TestDirectionResult.VALID:
                     possible_directions.append(new_dir)
+                if delta_other_av < 1e-2 * self.axis_delta[free_comp_var[0]]:
+                    test_composition = False
 
         # Get best direction for state variables and get normalized delta (normalized to axis stepping)
         # If delta is close to 1, then zpf line is near vertical, in this case, don't bother with checking
         #    composition axis, since it could likely fail
         if len(possible_directions) > 0:
             best_state_dir, delta = self.find_best_direction(node, possible_directions, True)
-            if delta < 1.05:
+            #Delta is sqrt(dv1**2 + dv2**2) so if delta > 1.41, then the composition should be the better axis variable
+            #We'll give a little leeway and set the threshold to 1.35
+            if delta < 1.35:
                 return best_state_dir
+        
+        if not test_composition:
+            return None
 
         for av in free_comp_var:
             for d in directions:
-                valid, new_dir = self.test_direction(node, av, d, 1)
-                if valid:
+                test_result, new_dir, delta_other_av = self.test_direction(node, av, d, 1)
+                if test_result == TestDirectionResult.VALID:
                     possible_directions.append(new_dir)
 
         if len(possible_directions) > 0:
