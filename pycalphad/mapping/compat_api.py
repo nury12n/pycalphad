@@ -11,7 +11,7 @@ from .primitives import STATEVARS
 import copy
 
 
-def binplot(database, components, phases, conditions, plot_kwargs=None, verbose=False, **map_kwargs):
+def binplot(database, components, phases, conditions, plot_kwargs=None, **map_kwargs):
     """
     Calculate the binary isobaric phase diagram.
 
@@ -61,7 +61,7 @@ def binplot(database, components, phases, conditions, plot_kwargs=None, verbose=
 
     eq_kwargs = map_kwargs.get("eq_kwargs", {})  # only used for start points, not in the mapping currently
     mapper = Mapper(database, components, phases, conditions)
-    mapper.strategy.verbose = verbose
+    mapper.strategy.verbose = map_kwargs.get('verbose', False)
     start_points, start_dir = automatic_starting_points_from_axis_limits(database, components, phases, conditions, **eq_kwargs)
     mapper.strategy.add_starting_points_with_axes(start_points, start_dir)
     mapper.do_map()
@@ -76,7 +76,7 @@ def binplot(database, components, phases, conditions, plot_kwargs=None, verbose=
     return ax
 
 
-def ternplot(dbf, comps, phases, conds, x=None, y=None, eq_kwargs=None, verbose=False, **plot_kwargs):
+def ternplot(dbf, comps, phases, conds, x=None, y=None, eq_kwargs=None, **plot_kwargs):
     """
     Calculate the ternary isothermal, isobaric phase diagram.
     This function is a convenience wrapper around equilibrium() and eqplot().
@@ -121,7 +121,7 @@ def ternplot(dbf, comps, phases, conds, x=None, y=None, eq_kwargs=None, verbose=
 
     phases = filter_phases(dbf, unpack_components(dbf, comps), phases)
     mapper = Mapper(dbf, comps, phases, conds)
-    mapper.strategy.verbose = verbose
+    mapper.strategy.verbose = eq_kwargs.get('verbose', False)
     start_points, start_dir = automatic_starting_points_from_axis_limits(dbf, comps, phases, conds)
     mapper.strategy.add_starting_points_with_axes(start_points, start_dir)
     mapper.do_map()
@@ -135,7 +135,7 @@ def ternplot(dbf, comps, phases, conds, x=None, y=None, eq_kwargs=None, verbose=
 
     return ax
 
-def isoplethplot(database, components, phases, conditions, plot_kwargs=None, verbose=False, **map_kwargs):
+def isoplethplot(database, components, phases, conditions, plot_kwargs=None, **map_kwargs):
     """
     Calculates an isopleth phase diagram.
     For now, we'll define isopleths as having 1 potential condition and 1 non-potential condition
@@ -212,7 +212,7 @@ def isoplethplot(database, components, phases, conditions, plot_kwargs=None, ver
         #     edge_conditions[other_var] = conditions[other_var][1]
         #     step_conditions.append((copy.copy(edge_conditions), axis_var)) 
     
-    mapper.strategy.verbose = verbose
+    mapper.strategy.verbose = map_kwargs.get('verbose', False)
     for sc in step_conditions:
         mapper.strategy.add_nodes_from_conditions(*sc)
 
@@ -227,7 +227,7 @@ def isoplethplot(database, components, phases, conditions, plot_kwargs=None, ver
 
     return ax
 
-def stepplot(database, components, phases, conditions, plot_kwargs=None, verbose=False, **map_kwargs):
+def stepplot(database, components, phases, conditions, plot_kwargs=None, **map_kwargs):
     """
     Calculate the binary isobaric phase diagram.
 
@@ -276,7 +276,7 @@ def stepplot(database, components, phases, conditions, plot_kwargs=None, verbose
 
     eq_kwargs = map_kwargs.get("eq_kwargs", {})  # only used for start points, not in the mapping currently
     mapper = Mapper(database, components, phases, conditions)
-    mapper.strategy.verbose = verbose
+    mapper.strategy.verbose = map_kwargs.get('verbose', False)
     start_conditions = {key:value for key,value in conditions.items()}
     start_conditions[indep_vars[0]] = (conditions[indep_vars[0]][0] + conditions[indep_vars[0]][1]) / 2
     mapper.strategy.add_nodes_from_conditions(start_conditions)

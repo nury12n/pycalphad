@@ -1,1 +1,1 @@
-from .compat_api import binplot, ternplot
+from .compat_api import binplot, ternplot, stepplot, isoplethplot

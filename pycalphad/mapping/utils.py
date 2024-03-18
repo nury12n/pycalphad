@@ -119,13 +119,6 @@ def _extract_point_from_dataset(dbf, comps, models, eq_result, phase_records, nu
     curr_conds = _get_conditions_from_eq(eq_result)
     return Point(curr_conds, compsets[:num_phases_to_fix], compsets[num_phases_to_fix:], [])
 
-def _check_all_compsets_are_separate(cs_list):
-    for i in range(len(cs_list)):
-        for j in range(i+1, len(cs_list)):
-            if _eq_compset(cs_list[i], cs_list[j]):
-                return False
-    return True
-
 def calculate_with_new_conditions(point : Point, new_conds, free_var):
     '''
     Create a new point and recalculate equilibrium with the given conditions
@@ -219,25 +212,15 @@ def check_point_is_global_min(point: Point, chem_pot, sys_definition, phase_reco
     gm = np.squeeze(test_points.GM.values)
 
     #Calculate max residual of stable composition sets to chemical potential
-    #   We only care if the chemical potential happens to be lying above the
-    #      free energy of the compsets since this can result in falsely identifying
-    #      new composition sets that aren't actually stable
-    #   When the chemical potential is below the free energies, then this will be
-    #      risk-averse where a new composition set may not be detected. However, this
-    #      should be corrected later when the new composition set becomes detected as
-    #      we will removed the metastable parts of the zpf line behind the newly calculated
-    #      node
-    max_res = np.amax([0] + [10*(np.sum(np.array(cs.X)*chem_pot) - np.array(cs.energy)) for cs in point.stable_composition_sets])
+    #   There are a small number of cases where the chemical potential hyperplane
+    #   can have an error more than the tolerance we set here
+    #   As a correction, take the error between the chemical potential hyperplane and
+    #   the stable composition sets and offset the hyperplane to CS that is furthest beneath
+    max_res = np.amax([0] + [(np.sum(np.array(cs.X)*chem_pot) - np.array(cs.energy)) for cs in point.stable_composition_sets])
     #max_res = 0
 
-    #Compare relative difference between free energy of phase and chem pot hyperplane
-    #   This seems to take care of the cases where a phase is mistakenly added due to 
-    #   numerical uncertainty in the chem_pot (since the convergence criteria is depends on
-    #   site fraction, phase amount and state variable changes)
     g_chempot = comps * np.array(chem_pot - max_res)
     dG = (np.sum(g_chempot, axis=1)) - gm
-    #u_sum = np.sum(g_chempot, axis=1)
-    #dG = (u_sum - gm) / np.abs(u_sum)
 
     # Largest driving force (positive)
     max_id = np.argmax(dG)
@@ -273,6 +256,30 @@ def check_point_is_global_min(point: Point, chem_pot, sys_definition, phase_reco
 def compare_cs_for_change_in_phases(prev_cs, new_cs):
     num_different_phases = len(set(new_cs).symmetric_difference(set(prev_cs)))
     return num_different_phases
+
+def _check_all_compsets_are_separate(cs_list):
+    # TODO: tol here is arbitrary. Is there a way to check if a added CS
+    #       from global_min_check is truely stable or just mistakenly added
+    for i in range(len(cs_list)):
+        for j in range(i+1, len(cs_list)):
+            #If two CS are the same, then we don't want to compute equilibrium
+            if _eq_compset(cs_list[i], cs_list[j]):
+                return False
+            
+            #Potential check for if we detected an artifical miscibility gap
+            #However, the tolerances here are quite large, so a better solution would be preferred
+            #Disabling for now
+            continue
+            has_fixed = cs_list[i].fixed or cs_list[j].fixed
+            has_free = (not cs_list[i].fixed) or (not cs_list[j].fixed)
+            if has_fixed and has_free:
+                if cs_list[i].phase_record.phase_name == cs_list[j].phase_record.phase_name:
+                    if np.allclose(cs_list[i].X, cs_list[j].X, atol=2e-2):
+                        return False
+                else:
+                    if np.allclose(cs_list[i].X, cs_list[j].X, atol=1e-3):
+                        return False
+    return True
 
 def create_node_from_different_points(prev_point: Point, new_point: Point, axis_vars, axis_lims = None):
     '''
@@ -321,7 +328,7 @@ def create_node_from_different_points(prev_point: Point, new_point: Point, axis_
         result = solver.solve(solution_cs, {str(k):val for k,val in new_conds.items()})
         if not result.converged:
             return None
-    except:
+    except Exception as e:
         return None
 
     if set(solution_cs) != set(new_cs):

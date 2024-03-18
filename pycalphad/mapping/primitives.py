@@ -20,13 +20,13 @@ class ExitHint(Enum):
     NO_EXITS = 1
     FORCE_ALL_EXITS = 2
 
-def _eq_compset(compset: CompositionSet, other: CompositionSet):
+def _eq_compset(compset: CompositionSet, other: CompositionSet, atol = CS_EQ_TOL):
     # Composition set equality
     if compset is other:
         return True
     if compset.phase_record.phase_name != other.phase_record.phase_name:
         return False
-    if np.allclose(compset.dof, other.dof, atol=CS_EQ_TOL):
+    if np.allclose(compset.dof, other.dof, atol=atol):
         return True
     return False
 
