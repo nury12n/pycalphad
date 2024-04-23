@@ -15,7 +15,9 @@ def degrees_of_freedom(point, components, num_potential_conditions):
     Fixed potentials = 2 - num_potential_conditions (assuming T and P are the only potentials we can set)
     Components assume it contains 'VA'
     '''
-    return len(components)-1 + 2 - len(point.stable_composition_sets) - (2-num_potential_conditions)
+    num_non_va = len(set(components)-{'VA'})
+    #return len(components)-1 + 2 - len(point.stable_composition_sets) - (2-num_potential_conditions)
+    return num_non_va + 2 - len(point.stable_composition_sets) - (2-num_potential_conditions)
 
 def _get_conditions_from_eq(eq_result: Dataset):
     '''
@@ -216,8 +218,8 @@ def check_point_is_global_min(point: Point, chem_pot, sys_definition, phase_reco
     #   can have an error more than the tolerance we set here
     #   As a correction, take the error between the chemical potential hyperplane and
     #   the stable composition sets and offset the hyperplane to CS that is furthest beneath
-    max_res = np.amax([0] + [(np.sum(np.array(cs.X)*chem_pot) - np.array(cs.energy)) for cs in point.stable_composition_sets])
-    #max_res = 0
+    #max_res = np.amax([0] + [(np.sum(np.array(cs.X)*chem_pot) - np.array(cs.energy)) for cs in point.stable_composition_sets])
+    max_res = 0
 
     g_chempot = comps * np.array(chem_pot - max_res)
     dG = (np.sum(g_chempot, axis=1)) - gm
@@ -231,17 +233,74 @@ def check_point_is_global_min(point: Point, chem_pot, sys_definition, phase_reco
     # Check if largest driving force is unique
     # Unique phase name
     # Or unique composition if phase name is not unique
+    # Always assume the new composition set is truely global min until a test fails
     num_sv = len(state_variables)
-    distinct_comp = False
+    distinct_comp = True
     new_phase_name = True
     for cs in point.stable_composition_sets:
         if phase_id[max_id] == cs.phase_record.phase_name:
             new_phase_name = False
+
+            same_config = True
             for i in range(cs.phase_record.phase_dof):
                 if abs(cs.dof[num_sv + i] - site_fracs[max_id, i]) > 10*COMP_DIFFERENCE_TOL:
-                    distinct_comp = True
+                    same_config = False
                     break
-    if not distinct_comp and not new_phase_name:
+
+            # If different configuration, then compute equilibrium
+            # between the two composition sets to see if the misciblity gap
+            # is truely what the global min check claims
+            # Essentially, create a copy of the composition we compare against (ref) and a composition
+            # set of the proposed configuration (test), then compute equilibrium at the conditions defined
+            # at the ref CS.
+            # Possible outputs:
+            #   1) Failed equilibrium - assume that the two comp sets are the same (if they happen to be 
+            #      different, then it should be caught in a later iteration)
+            #   2) Comp sets after equilibrium are the same - then the new config is not a miscibility 
+            #      gap and we're still at global min
+            #   3) Comp sets are different
+            #        a) Phase fraction of ref CS is 0 -> we are at global min, but at the wrong configuration
+            #             This can occur in systems like Al-Fe were we transition from disorder to ordered
+            #             BCC without a two phase region
+            #             In this case, we just replace the configuration of the ref CS with the test CS
+            #        b) Phase fraction of ref CS > 0 -> new point at global min is found
+            if not same_config:
+                cs_ref = CompositionSet(cs.phase_record)
+                cs_ref.update(cs.dof[num_sv:], 1, cs.dof[:num_sv])
+            
+                cs_test = CompositionSet(cs.phase_record)
+                cs_test.update(site_fracs[max_id, :cs.phase_record.phase_dof], 1e-6, cs.dof[:num_sv])
+                conds = {key: _get_value_for_var(cs_ref, key) for key in point.global_conditions}
+                #print('before', cs_ref, cs_test)
+                solver = Solver(remove_metastable=True, allow_changing_phases=False)
+                results = solver.solve([cs_ref, cs_test], {str(k):val for k,val in conds.items()})
+                #print('after ', cs_ref, cs_test)
+
+                if results.converged:
+                    same_config = True
+                    for i in range(cs.phase_record.phase_dof):
+                        if abs(cs_ref.dof[num_sv + i] - cs_test.dof[num_sv + i]) > 10*COMP_DIFFERENCE_TOL:
+                            same_config = False
+                            break
+
+                    # If different comp sets, then check phase fraction of ref CS
+                    if not same_config:
+                        # If phase fraction of ref CS is 0, then replace config of cs with config of cs_test
+                        if cs_ref.NP < 1e-3:
+                            cs.update(cs_test.dof[num_sv:], cs.NP, state_variables)
+                            same_config = True
+                        # If phase fraction is above 0, then we don't have to do anything
+
+                # If equilibrium failed, assume new configuration is is not global min
+                else:
+                    same_config = False
+
+                #if same_config:
+                #    print('HA! YOU INCORRECTLY DETECTED A MISCIBILITY GAP!!')
+
+            distinct_comp = distinct_comp and (not same_config)
+
+    if (not distinct_comp) and not new_phase_name:
         return True, point
 
     # Create composition set and create new point, which is the previous point + new phase
@@ -266,19 +325,6 @@ def _check_all_compsets_are_separate(cs_list):
             if _eq_compset(cs_list[i], cs_list[j]):
                 return False
             
-            #Potential check for if we detected an artifical miscibility gap
-            #However, the tolerances here are quite large, so a better solution would be preferred
-            #Disabling for now
-            continue
-            has_fixed = cs_list[i].fixed or cs_list[j].fixed
-            has_free = (not cs_list[i].fixed) or (not cs_list[j].fixed)
-            if has_fixed and has_free:
-                if cs_list[i].phase_record.phase_name == cs_list[j].phase_record.phase_name:
-                    if np.allclose(cs_list[i].X, cs_list[j].X, atol=2e-2):
-                        return False
-                else:
-                    if np.allclose(cs_list[i].X, cs_list[j].X, atol=1e-3):
-                        return False
     return True
 
 def create_node_from_different_points(prev_point: Point, new_point: Point, axis_vars, axis_lims = None):

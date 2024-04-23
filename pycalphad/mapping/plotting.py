@@ -65,7 +65,9 @@ def is_true_node(node: Point, mapper):
     #   It is a node in the sense that it defines the start of a zpf line
     #   However, it is also not a node in this sense where it doesn't represent an invariant
     #Since we store all the conditions in the node, we can check this by gibbs phase rule f = n+2-p-c = 0
-    f = len(mapper.elements)-1 + 2 - len(node.stable_composition_sets) - (2-mapper.num_potential_conditions)
+    num_non_va = len(set(mapper.elements)-{'VA'})
+    #f = len(mapper.elements)-1 + 2 - len(node.stable_composition_sets) - (2-mapper.num_potential_conditions)
+    f = num_non_va + 2 - len(node.stable_composition_sets) - (2-mapper.num_potential_conditions)
     return f == 0
 
 # Case for tie-lines in planes - plot lines between the composition at each stable composition sets
