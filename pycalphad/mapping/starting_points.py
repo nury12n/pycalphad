@@ -11,7 +11,7 @@ from pycalphad.core.constants import MIN_SITE_FRACTION
 
 from .primitives import STATEVARS, Point, Direction
 
-from pycalphad.mapping.utils import _extract_point_from_dataset, _is_a_potential, _get_conditions_from_eq
+from pycalphad.mapping.utils import _extract_point_from_dataset, _is_a_potential, _get_conditions_from_eq, _sort_cs_by_what_to_fix
 
 def starting_point_from_equilibrium(dbf, comps, phases, conditions, condition_to_drop, **eq_kwargs):
     """
@@ -116,6 +116,13 @@ def _get_unique_starting_points_from_along_potential_axis(dbf, comps, models, eq
                 solver = Solver(remove_metastable=True)
                 result = solver.solve(solution_compsets, {str(ky): vl for ky, vl in sub_conds.items()})
                 if result.converged and len(solution_compsets) == 2:
+                    solution_compsets = _sort_cs_by_what_to_fix(dbf, comps, models, solution_compsets)
+                    solution_compsets[0].fixed = True
+                    solution_compsets[0].NP = 0
+                    for i in range(1, len(solution_compsets)):
+                        solution_compsets[i].fixed = False
+                        solution_compsets[i].NP = 1 / (len(solution_compsets)-1)
+
                     point.global_conditions[axis_var] = _get_value_for_var(cs_1, axis_var)
                     found_starting_points.append(point)
             except Exception as e:

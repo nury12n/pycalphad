@@ -70,14 +70,11 @@ def _sort_cs_by_what_to_fix(dbf, comps, models, cs_list):
     for i in range(len(cs_list)):
         for j in range(i+1, len(cs_list)):
             if doo_list[j] > doo_list[i]:
-                temp_cs = cs_list[i]
-                cs_list[i] = cs_list[j]
-                cs_list[j] = temp_cs
+                cs_list[i], cs_list[j] = cs_list[j], cs_list[i]
             elif doo_list[i] == doo_list[j]:
                 if prod_list[j] < prod_list[i]:
-                    temp_cs = cs_list[i]
-                    cs_list[i] = cs_list[j]
-                    cs_list[j] = temp_cs
+                    cs_list[i], cs_list[j] = cs_list[j], cs_list[i]
+
     return cs_list
 
 

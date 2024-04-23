@@ -94,8 +94,8 @@ class Point():
             return False
 
     def __str__(self):
-        output = str([c.phase_record.phase_name for c in self.fixed_composition_sets])
-        output += str([c.phase_record.phase_name for c in self.free_composition_sets])
+        output = 'Fixed: ' + str([c.phase_record.phase_name for c in self.fixed_composition_sets])
+        output += ', Free: ' + str([c.phase_record.phase_name for c in self.free_composition_sets])
         output += str(self.global_conditions)
         return output
 
@@ -139,8 +139,8 @@ class Node(Point):
         return (self.axis_var, self.axis_direction)
 
     def __str__(self):
-        output = str([c.phase_record.phase_name for c in self.fixed_composition_sets])
-        output += str([c.phase_record.phase_name for c in self.free_composition_sets])
+        output = 'Fixed: ' + str([c.phase_record.phase_name for c in self.fixed_composition_sets])
+        output += ', Free: ' + str([c.phase_record.phase_name for c in self.free_composition_sets])
         output += str(self.global_conditions)
         output += str([self.axis_var, self.axis_direction])
         return output
