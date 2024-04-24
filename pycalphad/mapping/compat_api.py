@@ -2,7 +2,7 @@ from pycalphad import Database, variables as v
 from pycalphad.mapping.mapper import Mapper
 from pycalphad.mapping.starting_points import automatic_starting_points_from_axis_limits, _generate_fixed_variable_conditions
 import matplotlib.pyplot as plt
-from pycalphad.mapping.plotting import plot_map
+from pycalphad.mapping.plotting import plot_map, plot_2d
 import numpy as np
 from pycalphad.core.utils import unpack_components, filter_phases
 from pycalphad.plot.utils import phase_legend
@@ -131,7 +131,11 @@ def ternplot(dbf, comps, phases, conds, x=None, y=None, eq_kwargs=None, **plot_k
         fig, ax = plt.subplots(subplot_kw={'projection': "triangular"})
 
     legend_generator = plot_kwargs.get('legend_generator', phase_legend)
-    plot_map(mapper, tielines=plot_kwargs.get("tielines", True), ax=ax, legend_generator=legend_generator)
+    #plot_map(mapper, tielines=plot_kwargs.get("tielines", True), ax=ax, legend_generator=legend_generator)
+    ms = mapper.strategy
+    plot_2d(ms, x, y, ax, tielines = 1, legend_generator=legend_generator)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
 
     return ax
 
