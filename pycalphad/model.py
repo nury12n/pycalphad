@@ -1250,8 +1250,6 @@ class Model(object):
         # components set by the user)
         disordered_subl_constituents = disordered_phase.constituents[0].intersection(self.components)
         ordered_constituents = constituents
-        #disordered_subl_constituents = disordered_phase.constituents[0]
-        #ordered_constituents = ordered_phase.constituents
         substitutional_sublattice_idxs = []
         for idx, subl_constituents in enumerate(ordered_constituents):
             # Assumes that the ordered phase sublattice describes the ordering

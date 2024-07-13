@@ -312,21 +312,17 @@ def filter_phases(dbf, comps, candidate_phases=None):
         candidate_phases = set(candidate_phases).intersection(dbf.phases.keys())
     ordered_phases = [dbf.phases[phase].model_hints.get('ordered_phase') for phase in candidate_phases]
     disordered_phases = [dbf.phases[phase].model_hints.get('disordered_phase') for phase in candidate_phases]
-    #phases = [phase for phase in candidate_phases if
-    #            all_sublattices_active(comps, dbf.phases[phase]) and
-    #            (phase not in disordered_phases or (phase in disordered_phases and
-    #            dbf.phases[phase].model_hints.get('ordered_phase') not in candidate_phases))]
 
-    # Initial list of phases will be any phases that is not an order/disordered model
+    # First add all phases that are not order/disorder models
     phases = [phase for phase in candidate_phases if 
               all_sublattices_active(comps, dbf.phases[phase]) and
               (phase not in disordered_phases) and
               (phase not in ordered_phases)]
     
-    # Go through list of all order/disordered models
+    # Go through list of all order/disorder models
     for ord_phase, dis_phase in zip(ordered_phases, disordered_phases):
         if ord_phase is not None:
-            # Don't duplicate phases
+            # Don't duplicate phases (both ordered and disordered phases will have the same ordered_phase and disordered_phase hints)
             if ord_phase not in phases and dis_phase not in phases:
                 if all_sublattices_active(comps, dbf.phases[ord_phase]) and all_sublattices_active(comps, dbf.phases[dis_phase]):
                     # All active components in the ordered and disordered part of the phase
