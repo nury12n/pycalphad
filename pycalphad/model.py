@@ -4,6 +4,7 @@ calculations under specified conditions.
 """
 import copy
 import warnings
+import itertools
 from symengine import exp, log, Abs, Add, And, Float, Mul, Piecewise, Pow, S, sin, StrictGreaterThan, Symbol, zoo, oo
 from tinydb import where
 import pycalphad.variables as v
@@ -768,25 +769,59 @@ class Model(object):
                         va_symbols = [sitefrac for sitefrac in comp_symbols if sitefrac.species == v.Species('VA')]
                         neutral_symbols = [sitefrac for sitefrac in comp_symbols if sitefrac.species.charge == 0 and sitefrac.species.number_of_atoms > 0]
                         comp_symbols = charged_symbols + va_symbols + neutral_symbols
-
-                    mixing_term *= Mul(*comp_symbols)
+                        # if no anions in sublattice, we do not want to add yVa
+                        # from eq 24 in Sundman. Note that this will remove yVa
+                        # in a C:VA endmember, but we account for this when adding Q*yVa later
+                        if len(charged_symbols) == 0:
+                            mixing_term *= Mul(*neutral_symbols)
+                        else:
+                            mixing_term *= Mul(*comp_symbols)
+                    else:
+                       mixing_term *= Mul(*comp_symbols)
+                    # mixing_term *= Mul(*comp_symbols)
                 # is this a higher-order interaction parameter?
+                ionic_liq_cation_cation_neutral_special_case = False
+                if len(mixing_sublattice_indices) == 2 and phase.model_hints.get('ionic_liquid_2SL', False):
+                    # special case for ionic liquids with Ci,Cj:Va,B
+                    # this should be equivalent to a ternary regular solution
+                    # since comps is last used in the ternary mixing, we can 
+                    # only apply this once on checking the anion,vacancy,neutral sublattice
+                    va_subls = [(v.Species('VA') in phase.constituents[idx]) for idx in range(len(phase.constituents))]
+                    va_subl_idx = (len(phase.constituents) - 1) - va_subls[::-1].index(True)
+                    if subl_index == va_subl_idx:
+                        comps_list = [c for c in itertools.chain(*param['constituent_array'])]
+                        all_symbols = [v.SiteFraction(phase.name, subl_index, c) for c in comps_list]
+                        pos_symbols = [sitefrac for sitefrac in all_symbols if sitefrac.species.charge > 0 and sitefrac.species.number_of_atoms > 0]
+                        neg_symbols = [sitefrac for sitefrac in all_symbols if sitefrac.species.charge < 0 and sitefrac.species.number_of_atoms > 0]
+                        va_symbols = [sitefrac for sitefrac in all_symbols if sitefrac.species == v.Species('VA')]
+                        neutral_symbols = [sitefrac for sitefrac in all_symbols if sitefrac.species.charge == 0 and sitefrac.species.number_of_atoms > 0]
+                        if len(neg_symbols) == 0:
+                            ionic_liq_cation_cation_neutral_special_case = True
+                            comps = pos_symbols + neutral_symbols
+                            comp_symbols = pos_symbols + neutral_symbols
                 if len(comps) == 2 and param['parameter_order'] > 0:
                     # multiply in (y_A - y_B) terms
                     if len(mixing_sublattice_indices) == 1:
                         # Normal R-K interaction parameter for mixing on one sublattice
                         mixing_term *= Pow(comp_symbols[0] - comp_symbols[1], param['parameter_order'])
-                    elif len(mixing_sublattice_indices) == 2:
+                    elif len(mixing_sublattice_indices) == 2 and not ionic_liq_cation_cation_neutral_special_case:
                         # We have a reciprocal parameter
                         # Similar to the ternary case, the parameter order has a special meaning for reciprocal parameters.
                         # We only multiply by (y_A - y_B) if the sublattice corresponds to a specific parameter order
                         # See Eq 5.99 in Section 5.8.1 of Lukas, Fries and Sundman [2].
                         # Testing with Thermo-Calc indicates that that L1 corresponds to the second sublattice
                         # with mixing and L2 corresponds to the first sublattice with mixing.
-                        if param['parameter_order'] > 2:  # L0 case doesn't have a (yA - yB) term
-                            raise ValueError(f"Reciprocal parameters can only use parameter order 0, 1, or 2. Got {param['parameter_order']} for {param}.")
-                        if subl_index == mixing_sublattice_indices[-param['parameter_order']]:
-                            mixing_term *= (comp_symbols[0] - comp_symbols[1])
+                        # This is generalized to higher order in Sundman, Calphad 15 (1991) 109
+                        # to L(A,B:C,D) = sum((y_A-y_B)^i L^2i) + sum((y_C-y_D)^i L^(2i-1))
+                        # aka L^i corresponds to (y_A-y_B)^(i/2) if i is even and (y_C-y_D)^((i+1)/2) if i is odd
+                        corresponding_subl = param['parameter_order'] % 2
+                        if subl_index == mixing_sublattice_indices[corresponding_subl]:
+                            n = int((param['parameter_order']+1)/2)
+                            mixing_term *= (comp_symbols[0] - comp_symbols[1])**n
+                        #if param['parameter_order'] > 2:  # L0 case doesn't have a (yA - yB) term
+                        #    raise ValueError(f"Reciprocal parameters can only use parameter order 0, 1, or 2. Got {param['parameter_order']} for {param}.")
+                        #if subl_index == mixing_sublattice_indices[-param['parameter_order']]:
+                        #    mixing_term *= (comp_symbols[0] - comp_symbols[1])
                     else:
                         raise ValueError(f"Reciprocal interaction parameters beyond order L0 for more than 2 sublattices are not supported. Got mixing on {len(mixing_sublattice_indices)} sublattices for parameter {param}.")
                 if len(comps) == 3:
@@ -844,13 +879,16 @@ class Model(object):
                     # The last index that contains a vacancy
                     va_subl_idx = (len(phase.constituents) - 1) - va_subls[::-1].index(True)
                     va_present = any((v.Species('VA') in c) for c in param['constituent_array'])
-                    if va_present and (max(len(c) for c in param['constituent_array']) == 1):
-                        # No need to apply pair rule for VA-containing endmember
-                        pass
-                    elif va_subl_idx > -1:
-                        for sym in mixing_term.free_symbols:
-                            if sym.species.charge > 0:
-                                pair_rule[sym] = sym * v.SiteFraction(sym.phase_name, va_subl_idx, v.Species('VA'))
+                    # if va_present and (max(len(c) for c in param['constituent_array']) == 1):
+                    #     # No need to apply pair rule for VA-containing endmember
+                    #     pass
+                    # elif va_subl_idx > -1:
+                    #     for sym in mixing_term.free_symbols:
+                    #         if sym.species.charge > 0:
+                    #             pair_rule[sym] = sym * v.SiteFraction(sym.phase_name, va_subl_idx, v.Species('VA'))
+                    for sym in mixing_term.free_symbols:
+                        if sym.species.charge > 0:
+                            pair_rule[sym] = sym * v.SiteFraction(sym.phase_name, va_subl_idx, v.Species('VA'))
                     mixing_term = mixing_term.xreplace(pair_rule)
                     # This parameter is normalized differently due to the variable charge valence of vacancies
                     mixing_term *= self.site_ratios[va_subl_idx]
